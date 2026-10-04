@@ -27,13 +27,10 @@ export function UpdateBanner() {
 
   useEffect(() => {
     check();
-    let remove: (() => void) | undefined;
-    if (Capacitor.isNativePlatform()) {
-      import('@capacitor/app').then(({ App }) =>
-        App.addListener('resume', check).then((h) => { remove = () => h.remove(); }),
-      );
-    }
-    return () => remove?.();
+    // Verifica de novo quando o app volta para a tela (evento padrão, sem plugin nativo).
+    const onVisible = () => document.visibilityState === 'visible' && check();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
   }, [check]);
 
   if (!update) return null;

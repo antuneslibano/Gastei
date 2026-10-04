@@ -9,6 +9,7 @@ import { Planning } from './screens/Planning';
 import { Settings } from './screens/Settings';
 import { TxForm } from './components/TxForm';
 import { useToast } from './components/Toast';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 type Tab = 'home' | 'transactions' | 'payslips' | 'planning' | 'settings';
 
@@ -66,11 +67,13 @@ export function App() {
         </button>
       </header>
 
+      <ErrorBoundary resetKey={tab} onReset={() => setTab('home')}>
       {tab === 'home' && <Dashboard month={month} setMonth={setMonth} onEdit={(tx) => setForm({ tx })} goTo={setTab} />}
       {tab === 'transactions' && <Transactions month={month} setMonth={setMonth} onEdit={(tx) => setForm({ tx })} />}
       {tab === 'payslips' && <Payslips />}
       {tab === 'planning' && <Planning month={month} setMonth={setMonth} />}
       {tab === 'settings' && <Settings />}
+      </ErrorBoundary>
 
       {(tab === 'home' || tab === 'transactions') && (
         <button className="fab" onClick={() => setForm({})} aria-label="Novo lançamento">+</button>
