@@ -6,6 +6,7 @@ import { money, percent } from '../lib/format';
 import { Bars, BarLabels, Donut } from '../components/Charts';
 import { MonthPicker } from '../components/MonthPicker';
 import type { Transaction } from '../lib/types';
+import { UpdateBanner } from '../components/UpdateBanner';
 
 interface Props {
   month: string;
@@ -62,6 +63,7 @@ export function Dashboard({ month, setMonth, onEdit, goTo }: Props) {
 
   return (
     <div className="screen">
+      <UpdateBanner />
       <MonthPicker month={month} onChange={setMonth} />
 
       <div className="card">

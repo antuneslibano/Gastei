@@ -1,91 +1,132 @@
+# Gera o APK do Android e publica nos Releases do GitHub.
+# O app verifica o último Release ao abrir e oferece a atualização.
+#
+# Para lançar uma versão: rode este workflow em Actions → "Release Android" → Run workflow,
+# informando a versão (ex.: 0.2.0) — ou envie uma tag "vX.Y.Z".
+#
+# Secrets necessários (Settings > Secrets and variables > Actions):
+#   ANDROID_KEYSTORE_BASE64    keystore de assinatura em base64
+#   ANDROID_KEYSTORE_PASSWORD  senha do keystore e da chave
+#   ANDROID_KEY_ALIAS          (opcional) alias da chave; se omitido, usa o primeiro do keystore
+# Todas as versões precisam da MESMA chave, senão o Android não instala a atualização.
 name: Release Android
 
-# Para publicar uma nova versão de testes:
-#   1. atualize "version" no package.json (ex.: 0.2.0)
-#   2. git tag v0.2.0 && git push origin v0.2.0
-# O workflow gera o APK e cria o Release no GitHub com o arquivo anexado.
-# Também pode ser executado manualmente (Actions → Release Android → Run workflow):
-# nesse caso cria a tag v<versão do package.json> e o Release automaticamente.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versão (ex.: 0.2.0)'
+        required: true
 
 permissions:
   contents: write
 
-jobs:
-  android:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+concurrency:
+  group: release-android
+  cancel-in-progress: false
 
-      - uses: actions/setup-node@v4
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Definir versão
+        id: version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="${INPUT_VERSION#v}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Versão inválida: '$VERSION'. Use o formato 1.2.3."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 21
-
-      - uses: android-actions/setup-android@v3
 
       - name: Instalar dependências e testar
         run: |
           npm ci
           npm test
 
+      # A versão do package.json é a que o app compara com o Release para saber se há atualização.
+      - name: Aplicar versão
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
       - name: Build web + sync Android
         run: npm run android:sync
 
-      - name: Versão
-        id: ver
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "name=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "code=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: gradle/actions/setup-gradle@v4
 
-      - name: Keystore (opcional)
-        id: ks
-        env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          if [ -n "$KEYSTORE_B64" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
-            echo "path=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build APK
+      # versionCode precisa sempre crescer para o Android aceitar a atualização.
+      - name: Compilar APK
         working-directory: android
-        env:
-          ANDROID_KEYSTORE_PATH: ${{ steps.ks.outputs.path }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ARGS="-PversionName=${{ steps.ver.outputs.name }} -PversionCode=${{ steps.ver.outputs.code }}"
-          mkdir -p ../out
-          if [ -n "$ANDROID_KEYSTORE_PATH" ]; then
-            ./gradlew assembleRelease bundleRelease $ARGS
-            cp app/build/outputs/apk/release/app-release.apk ../out/Gastei-${{ steps.ver.outputs.name }}.apk
-            cp app/build/outputs/bundle/release/app-release.aab ../out/Gastei-${{ steps.ver.outputs.name }}.aab
-          else
-            # Sem keystore configurada: APK de testes assinado com chave de debug
-            ./gradlew assembleDebug $ARGS
-            cp app/build/outputs/apk/debug/app-debug.apk ../out/Gastei-${{ steps.ver.outputs.name }}-teste.apk
+          ./gradlew assembleRelease --no-daemon \
+            -PversionName=${{ steps.version.outputs.version }} \
+            -PversionCode=${{ github.run_number }}
+
+      - name: Verificar secrets de assinatura
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE" ] || [ -z "$PASSWORD" ]; then
+            echo "::error::Configure os secrets ANDROID_KEYSTORE_BASE64 e ANDROID_KEYSTORE_PASSWORD."
+            exit 1
           fi
 
-      - name: Publicar Release
+      - name: Assinar APK
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          if [ -z "$ALIAS" ]; then
+            ALIAS=$(keytool -list -keystore "$RUNNER_TEMP/release.keystore" -storepass "$PASSWORD" | grep -E 'PrivateKeyEntry' | head -1 | cut -d, -f1)
+          fi
+          "$BUILD_TOOLS/zipalign" -f -p 4 android/app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/aligned.apk"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$RUNNER_TEMP/release.keystore" --ks-key-alias "$ALIAS" \
+            --ks-pass env:PASSWORD --key-pass env:PASSWORD \
+            --out "Gastei-$VERSION.apk" "$RUNNER_TEMP/aligned.apk"
+          "$BUILD_TOOLS/apksigner" verify --print-certs "Gastei-$VERSION.apk"
+          rm "$RUNNER_TEMP/release.keystore"
+
+      - name: Publicar release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', steps.ver.outputs.name) }}
+          tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: Gastei ${{ steps.ver.outputs.name }}
-          files: out/*
-          prerelease: ${{ startsWith(steps.ver.outputs.name, '0.') }}
+          name: Gastei ${{ steps.version.outputs.version }}
+          files: Gastei-${{ steps.version.outputs.version }}.apk
           generate_release_notes: true
+          body: |
+            ## Como instalar
+            1. Baixe o arquivo **Gastei-${{ steps.version.outputs.version }}.apk** abaixo, pelo celular.
+            2. Abra o arquivo e permita "instalar apps desconhecidos" se o Android pedir.
+            3. Se já tiver o app instalado, ele é atualizado e seus dados continuam salvos.
+            4. Depois de instalado, o próprio app avisa quando houver uma nova versão.

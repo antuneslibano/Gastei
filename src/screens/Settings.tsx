@@ -1,4 +1,6 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
+import { checkForUpdate, RELEASES_REPO } from '../lib/updates';
+import { openDownload } from '../components/UpdateBanner';
 import { useStore } from '../lib/store';
 import { backupJson, parseBackup, shareFile, transactionsCsv } from '../lib/backup';
 import { emptyData } from '../lib/storage';
@@ -11,6 +13,20 @@ export function Settings() {
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const s = data.settings;
+  const [checking, setChecking] = useState(false);
+  const checkUpdates = async () => {
+    setChecking(true);
+    try {
+      const u = await checkForUpdate(__APP_VERSION__);
+      if (u) {
+        if (confirm(`Versão ${u.version} disponível. Baixar agora? Seus dados continuam salvos.`)) openDownload(u.downloadUrl);
+      } else toast('Você já está na versão mais recente');
+    } catch {
+      toast('Sem conexão para verificar atualizações');
+    } finally {
+      setChecking(false);
+    }
+  };
   const set = (patch: Partial<S>) => dispatch({ type: 'settings', settings: patch });
 
   const importBackup = async (file?: File) => {
@@ -70,6 +86,10 @@ export function Settings() {
       <div className="card small muted">
         <div className="bold" style={{ color: 'var(--text)' }}>Gastei v{__APP_VERSION__} · versão de testes</div>
         <div>{data.transactions.length} lançamentos · {data.payslips.length} contracheques · {data.recurring.length} contas fixas</div>
+        <div className="row wrap" style={{ marginTop: 8 }}>
+          <button className="btn secondary" disabled={checking} onClick={checkUpdates}>{checking ? 'Verificando…' : '🔄 Verificar atualizações'}</button>
+          <button className="btn ghost" onClick={() => openDownload(`https://github.com/${RELEASES_REPO}/releases`)}>Ver versões</button>
+        </div>
         <div style={{ marginTop: 6 }}>Em breve: conta com login e verificação em duas etapas, sincronização na nuvem e assinatura.</div>
       </div>
     </div>

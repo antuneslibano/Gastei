@@ -69,19 +69,21 @@ npm run android:sync
 npm run android:open
 ```
 
-## Releases (APK de testes)
+## Releases e atualização automática
 
-Cada tag `v*` gera um APK e publica em **Releases** automaticamente (`.github/workflows/release.yml`):
+O app, ao abrir (e ao voltar para a tela), consulta o último Release do GitHub. Se houver versão mais nova, mostra o aviso **"Nova versão disponível"** com o botão para baixar o APK, que instala por cima mantendo os dados. Também dá para verificar manualmente em **Ajustes → Verificar atualizações**.
 
-```bash
-# atualize "version" no package.json, depois:
-git tag v0.2.0
-git push origin v0.2.0
-```
+Para lançar uma versão: **Actions → Release Android → Run workflow**, informando a versão (ex.: `0.2.0`). O workflow testa, compila, assina o APK e publica o Release `v0.2.0`.
 
-Sem keystore configurada, o APK é assinado com chave de debug (serve para instalar e testar). Para gerar o **AAB assinado da Play Store**, cadastre os secrets do repositório: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
+Secrets necessários (Settings → Secrets and variables → Actions):
 
-> Guarde a keystore em local seguro: sem ela não é possível publicar atualizações na Play Store.
+| Secret | Conteúdo |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | keystore em base64 |
+| `ANDROID_KEYSTORE_PASSWORD` | senha do keystore e da chave |
+| `ANDROID_KEY_ALIAS` | opcional; se omitido, usa a primeira chave do keystore |
+
+> Todas as versões precisam ser assinadas com a **mesma chave**, senão o Android não instala a atualização. Guarde o keystore em local seguro: ele também será a chave de upload da Play Store.
 
 ## Roteiro
 
