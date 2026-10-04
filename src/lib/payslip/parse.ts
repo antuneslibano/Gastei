@@ -33,17 +33,26 @@ const MONEY_RE = /^\(?-?(R\$)?\d{1,3}(\.\d{3})*,\d{2}\)?-?$|^\(?-?(R\$)?\d+,\d{2
 const REF_RE = /^\d+([.,]\d+)?%$|^\d{1,3}:\d{2}$|^\d+\/\d+$|^\d+[dhDH]$/;
 const CODE_RE = /^[A-Z]?\d{1,6}[A-Z]?$/;
 
-const PROV_HEADER = /^(vencimentos?|proventos?|vantagens?|cr[eé]ditos?|rendimentos?|ganhos)$/i;
-const DESC_HEADER = /^(descontos?|d[eé]bitos?|dedu[cç][oõ]es|reten[cç][oõ]es)$/i;
+const PROV_HEADER = /^(vencimentos?|proventos?|vantagens?|cr[eé]ditos?|rendimentos?|ganhos|receitas?|entradas?)$/i;
+const DESC_HEADER = /^(descontos?|d[eé]bitos?|dedu[cç][oõ]es|reten[cç][oõ]es|despesas?|sa[ií]das?)$/i;
+/** Marcador de tipo na linha (layouts com uma única coluna de valor). */
+const KIND_MARK = /^(C|D|P|V|R|CR|DB|\+|-)$/;
 const REF_HEADER = /^(refer[eê]ncia|ref\.?|qtd\.?|quant\.?|quantidade|prazo|dias|horas|parc\.?)$/i;
 
-const END_OF_ITEMS = /^(totais|total)\b|total\s+(de\s+)?(vencimentos|proventos|descontos|vantagens|bruto|l[ií]quido)|^l[ií]quido\b|l[ií]quido\s+a\s+receber|valor\s+l[ií]quido|sal\.?\s*contr|base\s+(de\s+)?c[aá]lc|fgts\s+(do\s+)?m[eê]s|faixa\s+irrf/i;
-/** "Salário base" também é nome comum de rubrica: só encerra a tabela se a linha não começar com código. */
-const SOFT_END = /^sal[aá]rio[\s-]+base|^sal\.?\s*base/i;
+/**
+ * Linhas de resumo (totais, líquido, bases...). Nunca são rubricas, estejam onde estiverem no documento.
+ */
+const SUMMARY_LINE = /\b(totais|total|sub-?total|l[ií]quido|l[ií]q\.|bruto|saldo|valor\s+a\s+(receber|creditar|pagar)|a\s+receber|sal\.?\s*contr|base\s+(de\s+)?c[aá]lc|bases?\s+(do\s+)?(inss|irrf|ir|fgts|prev)|fgts\s+(do\s+)?m[eê]s|faixa\s+(do\s+)?irrf|margem\s+consign)/i;
+/** "Salário base" também é nome comum de rubrica: só é resumo se a linha não começar com código. */
+const SOFT_SUMMARY = /^sal[aá]rio[\s-]+base|^sal\.?\s*base/i;
 
-function isEndOfItems(line: Line): boolean {
-  if (END_OF_ITEMS.test(line.text)) return true;
-  return SOFT_END.test(line.text) && !CODE_RE.test(line.tokens[0]?.text ?? '');
+function isSummaryLine(line: Line): boolean {
+  const startsWithCode = CODE_RE.test(line.tokens[0]?.text ?? '') && !isMoney(line.tokens[0]?.text ?? '');
+  if (SUMMARY_LINE.test(line.text)) {
+    // "001 Gratificação de Função Bruta"? só aceita como rubrica se começa com código e não fala em total/líquido
+    return !(startsWithCode && !/total|l[ií]quido|saldo|a\s+receber/i.test(line.text));
+  }
+  return SOFT_SUMMARY.test(line.text) && !startsWithCode;
 }
 
 /** Palavras que indicam desconto. */
@@ -74,8 +83,10 @@ interface Columns {
 }
 
 function findHeader(lines: Line[]): { index: number; cols: Columns } | null {
+  // devolve o primeiro cabeçalho; use headerAt para cada linha
   for (let i = 0; i < lines.length; i++) {
     const toks = lines[i].tokens;
+    if (toks.some((t) => isMoney(t.text)) || /total|l[ií]quido/i.test(lines[i].text)) continue;
     const prov = toks.find((t) => PROV_HEADER.test(t.text.replace(/[:.]$/, '')));
     const desc = toks.find((t) => DESC_HEADER.test(t.text.replace(/[:.]$/, '')));
     if (prov && desc) {
@@ -121,6 +132,8 @@ interface RawItem {
   amount: number;
   amountToken: Token;
   col?: Col;
+  /** tipo indicado na própria linha (C/D, +/-, valor negativo) */
+  mark?: PayslipItemKind;
 }
 
 /** Quebra uma linha em rubricas. Suporta layout com 2 rubricas lado a lado. */
@@ -129,10 +142,21 @@ function itemsFromLine(line: Line, cols: Columns | null): RawItem[] {
   let descParts: string[] = [];
   let code: string | undefined;
   let refParts: string[] = [];
+  let mark: PayslipItemKind | undefined;
   const pending: Token[] = []; // valores ainda não atribuídos (sem cabeçalho)
 
+  const markOf = (t: string): PayslipItemKind | undefined => {
+    if (/^(C|P|V|R|CR|\+)$/.test(t)) return 'provento';
+    if (/^(D|DB|-)$/.test(t)) return 'desconto';
+    return undefined;
+  };
+
   const flush = (amountToken: Token, col?: Col) => {
-    const description = descParts.join(' ').replace(/\s+/g, ' ').trim();
+    const negative = /^\(|^-|-$|\)$/.test(amountToken.text);
+    let description = descParts.join(' ').replace(/\s+/g, ' ').trim();
+    // Linha com valor nas duas colunas e uma só descrição (ex.: linha de totais): repete a descrição.
+    const prev = out[out.length - 1];
+    if (!description && prev && col && prev.col && prev.col !== col) description = prev.description;
     if (!description || !/[a-zà-ú]/i.test(description)) return;
     if (/:$/.test(description) && IS_SUMMARY_LABEL.test(description)) return;
     out.push({
@@ -142,10 +166,12 @@ function itemsFromLine(line: Line, cols: Columns | null): RawItem[] {
       amount: money(amountToken.text),
       amountToken,
       col,
+      mark: negative ? 'desconto' : mark,
     });
     descParts = [];
     refParts = [];
     code = undefined;
+    mark = undefined;
   };
 
   for (const t of line.tokens) {
@@ -168,6 +194,15 @@ function itemsFromLine(line: Line, cols: Columns | null): RawItem[] {
     }
     if (REF_RE.test(t.text)) {
       refParts.push(t.text);
+      continue;
+    }
+    // Número solto alinhado à coluna de referência (ex.: "30" dias, "220" horas)
+    if (descParts.length && cols?.ref && /^\d+([.,]\d+)?$/.test(t.text) && nearestColumn(t, cols) === 'ref') {
+      refParts.push(t.text);
+      continue;
+    }
+    if (descParts.length && KIND_MARK.test(t.text)) {
+      mark = markOf(t.text);
       continue;
     }
     if (!descParts.length && !code && CODE_RE.test(t.text)) {
@@ -216,9 +251,9 @@ function classifyWithoutHeader(raw: RawItem[]): PayslipItemKind[] {
 // ---------- Rodapé / campos rotulados ----------
 
 const SUMMARY_LABELS: [keyof PayslipSummary, RegExp][] = [
-  ['totalProventos', /total\s+(de\s+|dos\s+)?(vencimentos|proventos|cr[eé]ditos|vantagens|rendimentos)|total\s+bruto|sal[aá]rio\s+bruto|valor\s+bruto/i],
-  ['totalDescontos', /total\s+(de\s+|dos\s+)?(descontos|d[eé]bitos|dedu[cç][oõ]es)/i],
-  ['liquido', /(valor\s+)?l[ií]quido(\s+a\s+(receber|creditar))?|valor\s+a\s+receber|l[ií]quido\s+(do\s+)?m[eê]s/i],
+  ['totalProventos', /total\s+(de\s+|das\s+|dos\s+)?(vencimentos|proventos|cr[eé]ditos|vantagens|rendimentos|receitas|entradas)|total\s+bruto|sal[aá]rio\s+bruto|valor\s+bruto|\bbruto\b/i],
+  ['totalDescontos', /total\s+(de\s+|das\s+|dos\s+)?(descontos|d[eé]bitos|dedu[cç][oõ]es|despesas|sa[ií]das)/i],
+  ['liquido', /(valor\s+|total\s+)?l[ií]quido(\s+a\s+(receber|creditar))?|l[ií]q\.|valor\s+a\s+(receber|creditar)|l[ií]quido\s+(do\s+)?m[eê]s/i],
   ['salarioBase', /sal[aá]rio[\s-]+base|sal\.?\s*base|vencimento\s+b[aá]sico/i],
   ['baseInss', /sal\.?\s*(de\s+)?contr(ibui[cç][aã]o)?\.?\s*(do\s+)?inss|base\s+(de\s+)?c[aá]lc(ulo)?\.?\s*(do\s+)?inss|base\s+(do\s+)?inss/i],
   ['baseFgts', /base\s+(de\s+)?c[aá]lc(ulo)?\.?\s*(do\s+)?fgts|base\s+(do\s+)?fgts/i],
@@ -266,6 +301,7 @@ function findSummary(lines: Line[], from: number, cols: Columns | null): Payslip
 
   for (let i = from; i < lines.length; i++) {
     const line = lines[i];
+    if (!isSummaryLine(line)) continue; // rubricas da tabela (ex.: "001 Salário Base") não são rodapé
     const matches = [...line.text.matchAll(ANY_SUMMARY_LABEL)];
     if (!matches.length) continue;
     matches.forEach((m, mi) => {
@@ -405,34 +441,43 @@ function findParties(lines: Line[], headerLimit: number) {
 
 // ---------- Principal ----------
 
+/** Cabeçalho de tabela nesta linha? */
+function headerAt(line: Line): Columns | null {
+  const h = findHeader([line]);
+  return h ? h.cols : null;
+}
+
 export function parsePayslipLines(lines: Line[]): ParsedPayslip {
   const warnings: string[] = [];
   const header = findHeader(lines);
-  const cols = header?.cols ?? null;
 
-  let start = header ? header.index + 1 : 0;
-  let end = lines.length;
-  for (let i = start; i < lines.length; i++) {
-    if (isEndOfItems(lines[i])) { end = i; break; }
-  }
-
+  // Lê o documento inteiro (todas as páginas). Cada página pode repetir o cabeçalho da tabela.
   const raw: RawItem[] = [];
-  for (let i = start; i < end; i++) {
+  let cols: Columns | null = null;
+  let page = 0;
+  let seenHeaderOnPage = false;
+  for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (line.page !== page) { page = line.page; seenHeaderOnPage = false; }
+    const h = headerAt(line);
+    if (h) { cols = h; seenHeaderOnPage = true; continue; }
     if (!line.tokens.some((t) => isMoney(t.text))) continue;
-    if (!header && i < 3) continue; // primeiras linhas costumam ser cabeçalho
-    if (!header && /cnpj|cpf|admiss|compet|refer[eê]ncia/i.test(line.text)) continue;
+    if (isSummaryLine(line)) continue;
+    // Antes do cabeçalho da tabela fica a identificação (empresa, funcionário, competência).
+    if (header && !seenHeaderOnPage && (page === lines[0]?.page || i < header.index)) continue;
+    if (!header && /cnpj|cpf|admiss|compet|refer[eê]ncia|banco|ag[eê]ncia|conta/i.test(line.text)) continue;
     raw.push(...itemsFromLine(line, cols));
   }
 
   let kinds: PayslipItemKind[];
-  if (cols) kinds = raw.map((r) => (r.col === 'desc' ? 'desconto' : 'provento'));
+  if (header) kinds = raw.map((r) => (r.col === 'desc' ? 'desconto' : r.col === 'prov' ? 'provento' : r.mark ?? 'provento'));
+  else if (raw.length && raw.every((r) => r.mark)) kinds = raw.map((r) => r.mark!);
   else {
-    kinds = classifyWithoutHeader(raw);
+    kinds = classifyWithoutHeader(raw).map((k, i) => raw[i].mark ?? k);
     if (raw.length) warnings.push('Não encontrei o cabeçalho da tabela; classifiquei as rubricas pela posição e pelo nome. Confira os tipos.');
   }
 
-  const items: PayslipItem[] = raw
+  let items: PayslipItem[] = raw
     .map((r, i) => ({
       id: uid(),
       code: r.code,
@@ -443,7 +488,10 @@ export function parsePayslipLines(lines: Line[]): ParsedPayslip {
     }))
     .filter((it) => it.amount > 0);
 
-  const summary = findSummary(lines, header ? end : 0, cols);
+  const summary = findSummary(lines, header ? header.index + 1 : 0, header?.cols ?? null);
+  const fixed = reconcile(items, summary);
+  items = fixed.items;
+  warnings.push(...fixed.notes);
   const headerText = lines.slice(0, header ? header.index : Math.min(lines.length, 10)).map((l) => l.text).join('\n');
   const parties = findParties(lines, header ? header.index : Math.min(lines.length, 12));
   const month = findMonth(lines.slice(0, header ? header.index + 1 : lines.length));
@@ -457,6 +505,7 @@ export function parsePayslipLines(lines: Line[]): ParsedPayslip {
     confidence = 0;
   }
   if (header) confidence += 0.2;
+  else confidence -= 0.1;
   if (summary.totalProventos !== undefined) {
     if (Math.abs(summary.totalProventos - sumProv) < 0.02) confidence += 0.15;
     else warnings.push(`A soma dos proventos lidos (${sumProv.toFixed(2)}) difere do total do documento (${summary.totalProventos.toFixed(2)}).`);
@@ -480,6 +529,95 @@ export function parsePayslipLines(lines: Line[]): ParsedPayslip {
     warnings,
     confidence: Math.max(0, Math.min(1, confidence)),
   };
+}
+
+// ---------- Conferência aritmética ----------
+
+const EPS = 0.015;
+const near = (a: number, b: number) => Math.abs(a - b) < EPS;
+const total = (items: PayslipItem[], kind: PayslipItemKind) => round2(items.filter((i) => i.kind === kind).reduce((s, i) => s + i.amount, 0));
+
+/**
+ * Usa a lógica do contracheque para corrigir a leitura:
+ * - um valor igual à soma das demais rubricas do mesmo tipo é um TOTAL, não rubrica;
+ * - um valor igual a proventos − descontos é o LÍQUIDO;
+ * - se os totais do documento não batem, testa inverter/remover uma rubrica até bater.
+ */
+export function reconcile(input: PayslipItem[], summary: PayslipSummary): { items: PayslipItem[]; notes: string[] } {
+  let items = [...input];
+  const notes: string[] = [];
+
+  // 1) totais e líquido que vazaram como rubrica.
+  //    Um total é a soma das rubricas MENORES do mesmo tipo; rubricas de total não costumam ter código.
+  const docTotal = (kind: PayslipItemKind) => (kind === 'provento' ? summary.totalProventos : kind === 'desconto' ? summary.totalDescontos : undefined);
+  for (let guard = 0; guard < 8; guard++) {
+    let changed = false;
+    const byAmountDesc = [...items].sort((x, y) => y.amount - x.amount);
+    for (const it of byAmountDesc) {
+      if (it.kind === 'informativo') continue;
+      const others = items.filter((x) => x !== it);
+      const smaller = others.filter((x) => x.kind === it.kind && x.amount < it.amount);
+      const known = docTotal(it.kind);
+      const plausible = !it.code || (known !== undefined && near(known, it.amount));
+      if (plausible && smaller.length >= 2 && near(it.amount, total(smaller, it.kind))) {
+        if (it.kind === 'provento') summary.totalProventos ??= it.amount;
+        else summary.totalDescontos ??= it.amount;
+        notes.push(`"${it.description}" (${it.amount.toFixed(2)}) é a soma das demais rubricas — tratado como total, não somado.`);
+        items = others;
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) {
+      for (const it of byAmountDesc) {
+        const others = items.filter((x) => x !== it);
+        const prov = total(others, 'provento');
+        const desc = total(others, 'desconto');
+        const plausible = !it.code || (summary.liquido !== undefined && near(summary.liquido, it.amount));
+        if (plausible && prov > 0 && desc > 0 && near(it.amount, prov - desc)) {
+          summary.liquido ??= it.amount;
+          notes.push(`"${it.description}" (${it.amount.toFixed(2)}) é o líquido (proventos − descontos) — não somado.`);
+          items = others;
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (!changed) break;
+  }
+
+  // 2) corrige com os totais do documento
+  const matches = (list: PayslipItem[]) => {
+    const p = total(list, 'provento');
+    const d = total(list, 'desconto');
+    let score = 0;
+    let known = 0;
+    if (summary.totalProventos !== undefined) { known++; if (near(p, summary.totalProventos)) score++; }
+    if (summary.totalDescontos !== undefined) { known++; if (near(d, summary.totalDescontos)) score++; }
+    if (summary.liquido !== undefined) { known++; if (near(p - d, summary.liquido)) score++; }
+    return { score, known };
+  };
+  const base = matches(items);
+  if (base.known >= 2 && base.score < base.known) {
+    let best: { list: PayslipItem[]; score: number; note: string } | null = null;
+    for (const it of items) {
+      if (it.kind === 'informativo') continue;
+      const flipped = items.map((x) => (x === it ? { ...x, kind: (x.kind === 'provento' ? 'desconto' : 'provento') as PayslipItemKind } : x));
+      const removed = items.filter((x) => x !== it);
+      for (const [list, note] of [
+        [flipped, `"${it.description}" estava na coluna errada — corrigido para ${it.kind === 'provento' ? 'desconto' : 'provento'} (fecha com os totais).`],
+        [removed, `"${it.description}" (${it.amount.toFixed(2)}) não faz parte da soma do documento — removido.`],
+      ] as [PayslipItem[], string][]) {
+        const m = matches(list);
+        if (m.score === m.known && (!best || m.score > best.score)) best = { list, score: m.score, note };
+      }
+    }
+    if (best) {
+      items = best.list;
+      notes.push(best.note);
+    }
+  }
+  return { items, notes };
 }
 
 const LOWER_WORDS = new Set(['de', 'da', 'do', 'das', 'dos', 'e', 's/', 'p/', 'c/', 'a', 'o', 'em', 'no', 'na']);

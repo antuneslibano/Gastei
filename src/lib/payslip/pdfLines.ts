@@ -100,3 +100,21 @@ export function linesFromItems(items: RawTextItem[], page = 1): Line[] {
     };
   });
 }
+
+/** Texto do PDF preservando o alinhamento das colunas (para diagnóstico). */
+export function linesToText(lines: Line[]): string {
+  const minX = Math.min(...lines.flatMap((l) => l.tokens.map((t) => t.x0)), 0);
+  const out: string[] = [];
+  let page = lines[0]?.page;
+  for (const l of lines) {
+    if (l.page !== page) { out.push(`--- página ${l.page} ---`); page = l.page; }
+    let row = '';
+    for (const c of l.cells) {
+      const col = Math.max(0, Math.round((c.x0 - minX) / 4.5));
+      row = row.length < col ? row.padEnd(col) : row + ' ';
+      row += c.text;
+    }
+    out.push(row.trimEnd());
+  }
+  return out.join('\n');
+}

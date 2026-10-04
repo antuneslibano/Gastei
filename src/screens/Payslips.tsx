@@ -3,30 +3,31 @@ import { useStore } from '../lib/store';
 import type { Payslip, PayslipItem, PayslipItemKind } from '../lib/types';
 import { parsePayslipLines } from '../lib/payslip/parse';
 import { PdfPasswordError, readPdfLines } from '../lib/payslip/readPdf';
+import { linesToText } from '../lib/payslip/pdfLines';
 import { analyzePayslip, sumKind, type CheckStatus } from '../lib/payslip/analyze';
 import { decimal, money, parseMoney, percent, round2, uid } from '../lib/format';
 import { addMonths, currentMonth, dateInMonth, monthLabel, todayISO } from '../lib/dates';
 import { Sheet } from '../components/Sheet';
 import { useToast } from '../components/Toast';
 
-type View = { kind: 'list' } | { kind: 'edit'; draft: Payslip; warnings: string[]; confidence?: number; isNew: boolean } | { kind: 'detail'; id: string };
+type View = { kind: 'list' } | { kind: 'edit'; draft: Payslip; warnings: string[]; confidence?: number; isNew: boolean; rawText?: string } | { kind: 'detail'; id: string };
 
 export function Payslips() {
   const { data } = useStore();
   const [view, setView] = useState<View>({ kind: 'list' });
 
   if (view.kind === 'edit')
-    return <PayslipEditor draft={view.draft} warnings={view.warnings} confidence={view.confidence} isNew={view.isNew} onDone={(id) => setView(id ? { kind: 'detail', id } : { kind: 'list' })} />;
+    return <PayslipEditor draft={view.draft} warnings={view.warnings} confidence={view.confidence} isNew={view.isNew} rawText={view.rawText} onDone={(id) => setView(id ? { kind: 'detail', id } : { kind: 'list' })} />;
   if (view.kind === 'detail') {
     const p = data.payslips.find((x) => x.id === view.id);
     if (p) return <PayslipDetail payslip={p} onBack={() => setView({ kind: 'list' })} onEdit={() => setView({ kind: 'edit', draft: structuredClone(p), warnings: [], isNew: false })} />;
   }
-  return <PayslipList onOpen={(id) => setView({ kind: 'detail', id })} onImported={(draft, warnings, confidence) => setView({ kind: 'edit', draft, warnings, confidence, isNew: true })} />;
+  return <PayslipList onOpen={(id) => setView({ kind: 'detail', id })} onImported={(draft, warnings, confidence, rawText) => setView({ kind: 'edit', draft, warnings, confidence, isNew: true, rawText })} />;
 }
 
 // ---------------- Lista + importação ----------------
 
-function PayslipList({ onOpen, onImported }: { onOpen: (id: string) => void; onImported: (p: Payslip, w: string[], c?: number) => void }) {
+function PayslipList({ onOpen, onImported }: { onOpen: (id: string) => void; onImported: (p: Payslip, w: string[], c?: number, rawText?: string) => void }) {
   const { data } = useStore();
   const hide = data.settings.hideValues;
   const inputRef = useRef<HTMLInputElement>(null);
@@ -61,7 +62,7 @@ function PayslipList({ onOpen, onImported }: { onOpen: (id: string) => void; onI
       };
       setPendingFile(null);
       setPassword('');
-      onImported(draft, parsed.warnings, parsed.confidence);
+      onImported(draft, parsed.warnings, parsed.confidence, linesToText(lines));
     } catch (e) {
       if (e instanceof PdfPasswordError) {
         setPendingFile({ name, buf, wrong: e.wrongPassword });
@@ -192,7 +193,7 @@ function PayslipEvolution() {
 
 // ---------------- Edição / revisão ----------------
 
-function PayslipEditor({ draft, warnings, confidence, isNew, onDone }: { draft: Payslip; warnings: string[]; confidence?: number; isNew: boolean; onDone: (id?: string) => void }) {
+function PayslipEditor({ draft, warnings, confidence, isNew, rawText, onDone }: { draft: Payslip; warnings: string[]; confidence?: number; isNew: boolean; rawText?: string; onDone: (id?: string) => void }) {
   const { data, dispatch } = useStore();
   const toast = useToast();
   const [p, setP] = useState<Payslip>(draft);
@@ -283,27 +284,23 @@ function PayslipEditor({ draft, warnings, confidence, isNew, onDone }: { draft: 
               <h2>{kind === 'provento' ? 'Proventos' : kind === 'desconto' ? 'Descontos' : 'Informativos'}</h2>
               <span className={`bold ${kind === 'provento' ? 'income' : kind === 'desconto' ? 'expense' : ''}`}>{money(sumKind(p.items, kind))}</span>
             </div>
-            <table className="items">
-              <tbody>
-                {items.map((i) => (
-                  <tr key={i.id}>
-                    <td>
-                      <input className="input" value={i.description} placeholder="Descrição" onChange={(e) => setItem(i.id, { description: e.target.value })} />
-                      {i.reference && <div className="tiny muted">ref. {i.reference}</div>}
-                    </td>
-                    <td className="amount-cell"><MoneyInput value={i.amount} onChange={(v) => setItem(i.id, { amount: v ?? 0 })} /></td>
-                    <td style={{ width: 44 }}>
-                      <select className="input" style={{ padding: 4, minWidth: 40 }} aria-label="Tipo" value={i.kind} onChange={(e) => setItem(i.id, { kind: e.target.value as PayslipItemKind })}>
-                        <option value="provento">+</option>
-                        <option value="desconto">−</option>
-                        <option value="informativo">i</option>
-                      </select>
-                    </td>
-                    <td style={{ width: 36 }}><button className="icon-btn" style={{ width: 32, height: 32, fontSize: 14 }} onClick={() => removeItem(i.id)} aria-label="Remover">✕</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="list">
+              {items.map((i) => (
+                <div key={i.id} className="col" style={{ gap: 6, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                  <input className="input" value={i.description} placeholder="Descrição" onChange={(e) => setItem(i.id, { description: e.target.value })} />
+                  {(i.code || i.reference) && <span className="tiny muted">{[i.code && `cód. ${i.code}`, i.reference && `ref. ${i.reference}`].filter(Boolean).join(' · ')}</span>}
+                  <div className="row">
+                    <div className="grow"><MoneyInput value={i.amount} onChange={(v) => setItem(i.id, { amount: v ?? 0 })} /></div>
+                    <select className="input" style={{ width: 'auto', padding: '4px 8px' }} aria-label="Tipo" value={i.kind} onChange={(e) => setItem(i.id, { kind: e.target.value as PayslipItemKind })}>
+                      <option value="provento">Provento</option>
+                      <option value="desconto">Desconto</option>
+                      <option value="informativo">Informativo</option>
+                    </select>
+                    <button className="icon-btn" style={{ width: 32, height: 32, fontSize: 14, flexShrink: 0 }} onClick={() => removeItem(i.id)} aria-label="Remover">✕</button>
+                  </div>
+                </div>
+              ))}
+            </div>
             {kind !== 'informativo' && <button className="btn ghost" onClick={() => addItem(kind)}>+ Adicionar {kind}</button>}
           </div>
         );
@@ -328,6 +325,15 @@ function PayslipEditor({ draft, warnings, confidence, isNew, onDone }: { draft: 
           <div className="stat"><div className="label">Líquido (calculado)</div><div className="value">{money(liquido)}</div></div>
         </div>
       </div>
+
+      {rawText && (
+        <details className="card">
+          <summary className="bold" style={{ cursor: 'pointer' }}>Ver texto lido do PDF</summary>
+          <div className="tiny muted" style={{ margin: '8px 0' }}>Se a leitura estiver errada, copie este texto (apague nome, CPF e outros dados pessoais) e envie para o suporte.</div>
+          <button className="btn secondary" onClick={() => navigator.clipboard?.writeText(rawText).then(() => toast('Texto copiado'), () => toast('Não foi possível copiar'))}>📋 Copiar texto</button>
+          <pre className="tiny" style={{ whiteSpace: 'pre', overflowX: 'auto', background: 'var(--surface-2)', padding: 8, borderRadius: 8, maxHeight: 320 }}>{rawText}</pre>
+        </details>
+      )}
 
       <div className="card col">
         <label className="check"><input type="checkbox" checked={launch} onChange={(e) => setLaunch(e.target.checked)} />Lançar o líquido como receita</label>
