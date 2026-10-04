@@ -72,12 +72,12 @@ body {
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 
-.app { max-width: 720px; margin: 0 auto; min-height: 100%; padding-bottom: calc(var(--nav-h) + 24px + env(safe-area-inset-bottom)); }
+.app { max-width: 720px; margin: 0 auto; min-height: 100%; padding-bottom: calc(var(--nav-h) + 24px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))); }
 
 .topbar {
   position: sticky; top: 0; z-index: 10;
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: calc(12px + env(safe-area-inset-top)) 16px 12px;
+  padding: calc(12px + var(--safe-area-inset-top, env(safe-area-inset-top, 0px))) 16px 12px;
   background: var(--bg);
 }
 .topbar h1 { margin: 0; font-size: 22px; }
@@ -165,7 +165,7 @@ button { cursor: pointer; }
   position: fixed; bottom: 0; left: 0; right: 0; z-index: 20;
   display: flex; justify-content: center;
   background: var(--surface); border-top: 1px solid var(--border);
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
 }
 .bottom-nav .inner { display: flex; width: 100%; max-width: 720px; height: var(--nav-h); }
 .bottom-nav button {
@@ -177,7 +177,7 @@ button { cursor: pointer; }
 .bottom-nav button.active .ico { filter: none; opacity: 1; }
 
 .fab {
-  position: fixed; right: max(16px, calc(50% - 344px)); bottom: calc(var(--nav-h) + 16px + env(safe-area-inset-bottom)); z-index: 21;
+  position: fixed; right: max(16px, calc(50% - 344px)); bottom: calc(var(--nav-h) + 16px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))); z-index: 21;
   width: 56px; height: 56px; border-radius: 18px; border: none; background: var(--brand); color: #fff;
   font-size: 30px; box-shadow: 0 6px 20px rgba(15, 157, 88, 0.4);
 }
@@ -185,7 +185,7 @@ button { cursor: pointer; }
 .sheet-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 50; display: flex; align-items: flex-end; justify-content: center; }
 .sheet {
   background: var(--bg); width: 100%; max-width: 720px; max-height: 92vh; overflow-y: auto;
-  border-radius: 20px 20px 0 0; padding: 8px 16px calc(16px + env(safe-area-inset-bottom));
+  border-radius: 20px 20px 0 0; padding: 8px 16px calc(16px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
   animation: up 0.2s ease-out;
 }
 .sheet .grabber { width: 40px; height: 4px; border-radius: 4px; background: var(--border); margin: 4px auto 8px; }
@@ -220,6 +220,6 @@ table.items tr:last-child td { border-bottom: none; }
 .spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--brand); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + 84px + env(safe-area-inset-bottom)); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; z-index: 100; font-size: 14px; font-weight: 600; max-width: calc(100% - 32px); }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + 84px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; z-index: 100; font-size: 14px; font-weight: 600; max-width: calc(100% - 32px); }
 table.items .input { padding: 8px; min-height: 40px; }
 table.items td.amount-cell { width: 112px; }

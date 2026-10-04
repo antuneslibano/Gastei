@@ -23,7 +23,7 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <div className="screen">
+      <div className="screen" style={{ paddingTop: 'calc(16px + var(--safe-area-inset-top, env(safe-area-inset-top, 0px)))' }}>
         <div className="card col">
           <h2>😕 Algo deu errado nesta tela</h2>
           <div className="small muted">Seus dados estão salvos. Tire um print desta mensagem e envie para o suporte.</div>

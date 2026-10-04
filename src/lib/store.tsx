@@ -114,7 +114,9 @@ const Ctx = createContext<{ data: AppData; dispatch: (a: Action) => void } | nul
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [data, dispatch] = useReducer(reducer, undefined, () => generateRecurring(loadData(), currentMonth()));
-  useEffect(() => saveData(data), [data]);
+  useEffect(() => {
+    saveData(data);
+  }, [data]);
   return <Ctx.Provider value={{ data, dispatch }}>{children}</Ctx.Provider>;
 }
 

@@ -40,7 +40,9 @@ export function App() {
     if (month >= currentMonth()) dispatch({ type: 'generate', month });
   }, [month, dispatch]);
 
-  useEffect(() => window.scrollTo(0, 0), [tab]);
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [tab]);
 
   const current = TABS.find((t) => t.id === tab)!;
   const hour = new Date().getHours();
